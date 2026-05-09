@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-pv-claim
+  labels:
+    app: {{ .Values.db.name }}
+spec:
+  storageClassName: {{ .Values.db.pvcStorageClassName }}
+  accessModes:
+    - {{ .Values.db.pvcAccessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.db.pvcSize }}

@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.db.name }}
+  labels:
+    app: {{ .Values.db.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.db.name }}
+  replicas: {{ .Values.db.replicaCount }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.db.name }}
+    spec:
+      {{- if .Values.dockerRegistry.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.dockerRegistry.name }}
+      {{- end }}
+      containers:
+      - name: {{ .Values.db.name }}
+        image: {{ .Values.db.image }}:{{ .Values.db.tag }}
+        imagePullPolicy: {{ .Values.db.imagePullPolicy }}
+        volumeMounts:
+        - mountPath: /var/lib/mysql
+          name: vpro-db-data
+        ports:
+        - name: vprodb-port
+          containerPort: 3306
+        env:
+         - name: MYSQL_ROOT_PASSWORD
+           valueFrom:
+             secretKeyRef:
+               name: app-secret
+               key: db-pass
+      volumes:
+        - name: vpro-db-data
+          persistentVolumeClaim:
+            claimName: db-pv-claim 
+      initContainers:
+      {{- range .Values.initContainers.db }}
+      - name: {{ .name }}
+        image: {{ .image }}
+        args:
+        {{- range .args }}
+        - {{ . | quote }}
+        {{- end }}
+        volumeMounts:
+        {{- range .volumeMounts }}
+        - name: {{ .name }}
+          mountPath: {{ .mountPath }}
+        {{- end }}
+      {{- end }}

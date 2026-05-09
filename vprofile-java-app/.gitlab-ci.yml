@@ -1,0 +1,127 @@
+stages:
+  - build
+  - unit-test
+  - checkstyle
+  - sonar-analysis
+  - quality-gate
+  - docker-build
+  - update-deployment
+
+variables:
+  MAVEN_OPTS: "-Xmx512m -Xms256m"
+
+cache:
+  paths:
+    - .m2/repository/
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+build:
+  stage: build
+  image: maven:3.9-eclipse-temurin-21
+  script:
+    - mvn clean install -DskipTests
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 hour
+
+unit-test:
+  stage: unit-test
+  image: maven:3.9-eclipse-temurin-21
+  script:
+    - mvn test
+  artifacts:
+    when: always
+    paths:
+      - target/surefire-reports/
+    expire_in: 1 week
+
+checkstyle:
+  stage: checkstyle
+  image: maven:3.9-eclipse-temurin-21
+  script:
+    - mvn checkstyle:checkstyle
+  artifacts:
+    paths:
+      - target/checkstyle-result.xml
+
+sonar-analysis:
+  stage: sonar-analysis
+  image: sonarsource/sonar-scanner-cli:latest
+  script:
+    - sonar-scanner -Dsonar.login=$LOGIN -Dsonar.host.url=$HOST -Dsonar.organization=$ORGANIZATION -Dsonar.projectKey=$PROJECT -Dsonar.projectName=vprofile-repo -Dsonar.projectVersion=1.0 -Dsonar.sources=src/ -Dsonar.java.binaries=target/classes/com/visualpathit/account/controller/ -Dsonar.junit.reportsPath=target/surefire-reports/ -Dsonar.jacoco.reportsPath=target/jacoco.exec -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml
+
+quality-gate:
+  stage: quality-gate
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - |
+      if [ -n "$CI_MERGE_REQUEST_IID" ]; then
+        URL="${HOST%/}/api/qualitygates/project_status?projectKey=$PROJECT&pullRequest=$CI_MERGE_REQUEST_IID"
+      else
+        URL="${HOST%/}/api/qualitygates/project_status?projectKey=$PROJECT&branch=$CI_COMMIT_REF_NAME"
+      fi
+      elapsed=0
+      while [ $elapsed -lt 120 ]; do
+        echo "URL: $URL"
+        echo "Making API call..."
+        RESPONSE=$(curl -s -w "HTTP_CODE:%{http_code}" -H "Authorization: Bearer $LOGIN" "$URL")
+        echo "Response: $RESPONSE"
+        STATUS=$(echo "$RESPONSE" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+        echo "Quality Gate status: $STATUS"
+        if [ "$STATUS" = "OK" ]; then
+          echo "Quality Gate passed."
+          exit 0
+        elif [ "$STATUS" = "ERROR" ]; then
+          echo "Quality Gate failed."
+          exit 1
+        else
+          echo "Waiting for Quality Gate result..."
+          sleep 10
+          elapsed=$((elapsed + 10))
+        fi
+      done
+      echo "Timed out waiting for Quality Gate result."
+      exit 1
+
+docker-build:
+  stage: docker-build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_DRIVER: overlay2
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+    - docker build -f Docker-files/app/multistage/Dockerfile -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+update-deployment:
+  stage: update-deployment
+  image: alpine:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - apk add --no-cache git
+    - wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+    - chmod +x /usr/local/bin/yq
+  script:
+    - REPO_URL=$(echo $CHARTS_REPO_URL | sed 's|:|/|')
+    - git clone https://oauth2:$CHARTS_REPO_TOKEN@$REPO_URL charts-repo
+    - cd charts-repo
+    - yq e '.app.image = "'$CI_REGISTRY_IMAGE'"' -i vprofile-chart/values.yaml
+    - yq e '.app.tag = "'$CI_COMMIT_SHA'"' -i vprofile-chart/values.yaml
+    - git config user.email "gitlab-ci@example.com"
+    - git config user.name "GitLab CI"
+    - git add vprofile-chart/values.yaml
+    - git commit -m "Update app image to $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - git push origin main

@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.rabbitmq.name }}
+  labels:
+    app: {{ .Values.rabbitmq.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.rabbitmq.name }}
+  replicas: {{ .Values.rabbitmq.replicaCount }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.rabbitmq.name }}
+    spec:
+      {{- if .Values.dockerRegistry.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.dockerRegistry.name }}
+      {{- end }}
+      containers:
+      - name: {{ .Values.rabbitmq.name }}
+        image: {{ .Values.rabbitmq.image }}:{{ .Values.rabbitmq.tag }}
+        imagePullPolicy: {{ .Values.rabbitmq.imagePullPolicy }}
+        ports:
+        - name: vpromq01-port
+          containerPort: 5672
+        env: 
+         - name: RABBITMQ_DEFAULT_PASS
+           valueFrom:
+             secretKeyRef:
+               name: app-secret
+               key: rmq-pass
+         - name: RABBITMQ_DEFAULT_USER
+           value: {{ .Values.rabbitmq.user | quote }}

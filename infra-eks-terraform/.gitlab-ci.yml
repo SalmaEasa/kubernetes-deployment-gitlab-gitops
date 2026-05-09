@@ -1,0 +1,163 @@
+image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - when: never
+
+stages:
+  - validate
+  - plan
+  - apply
+  - drift-detection
+  - notify
+  - destroy
+
+variables:
+  TF_ROOT: ${CI_PROJECT_DIR}
+  TF_HTTP_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/eks-state
+  TF_HTTP_LOCK_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/eks-state/lock
+  TF_HTTP_UNLOCK_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/eks-state/lock
+  TF_HTTP_USERNAME: gitlab-ci-token
+  TF_HTTP_PASSWORD: ${CI_JOB_TOKEN}
+  TF_HTTP_LOCK_METHOD: POST
+  TF_HTTP_UNLOCK_METHOD: DELETE
+  TF_HTTP_RETRY_WAIT_MIN: 5
+
+cache:
+  key: terraform
+  paths:
+    - ${TF_ROOT}/.terraform
+
+before_script:
+  - cd ${TF_ROOT}
+  - terraform --version
+  - terraform init -reconfigure
+
+validate:
+  stage: validate
+  script:
+    - terraform fmt -check
+    - terraform validate
+  tags:
+    - ec2
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+plan:
+  stage: plan
+  script:
+    - terraform plan -lock=false -out="planfile"  # Temporary: bypass lock
+  artifacts:
+    name: plan
+    paths:
+      - ${TF_ROOT}/planfile
+    expire_in: 1 week
+  tags:
+    - ec2
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+apply:
+  stage: apply
+  script:
+    - terraform plan -out="planfile"
+    - terraform apply -input=false "planfile"
+  tags:
+    - ec2
+  rules:
+    - if: '$DESTROY_MODE == "true"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+  environment:
+    name: production
+    action: start
+
+drift-check:
+  stage: drift-detection
+  script:
+    - terraform plan -detailed-exitcode
+  tags:
+    - ec2
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  allow_failure: true
+
+slack-notify-drift:
+  stage: notify
+  image: curlimages/curl:latest
+  before_script: []
+  script:
+    - |
+      if [ "$CI_JOB_STATUS" = "failed" ]; then
+        MESSAGE="🚨 *Drift Detected!* Infrastructure has drifted from desired state."
+        COLOR="danger"
+      else
+        MESSAGE="✅ *No Drift* Infrastructure is in sync with Git."
+        COLOR="good"
+      fi
+      curl -X POST -H 'Content-type: application/json' \
+        --data "{\"attachments\":[{\"color\":\"$COLOR\",\"text\":\"$MESSAGE\\n*Project:* $CI_PROJECT_NAME\\n*Pipeline:* $CI_PIPELINE_URL\"}]}" \
+        $SLACK_WEBHOOK_URL
+  tags:
+    - ec2
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  when: always
+
+slack-notify-failure:
+  stage: notify
+  image: curlimages/curl:latest
+  before_script: []
+  script:
+    - |
+      MESSAGE="❌ *Pipeline Failed!* "
+      case "$CI_JOB_STAGE" in
+        "validate") MESSAGE="$MESSAGE Terraform validation failed" ;;
+        "plan") MESSAGE="$MESSAGE Terraform plan failed" ;;
+        "apply") MESSAGE="$MESSAGE Terraform apply failed" ;;
+        *) MESSAGE="$MESSAGE Pipeline stage failed" ;;
+      esac
+      curl -X POST -H 'Content-type: application/json' \
+        --data "{\"attachments\":[{\"color\":\"danger\",\"text\":\"$MESSAGE\\n*Project:* $CI_PROJECT_NAME\\n*Branch:* $CI_COMMIT_REF_NAME\\n*Pipeline:* $CI_PIPELINE_URL\"}]}" \
+        $SLACK_WEBHOOK_URL
+  tags:
+    - ec2
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  when: on_failure
+
+slack-notify-success:
+  stage: notify
+  image: curlimages/curl:latest
+  before_script: []
+  script:
+    - |
+      MESSAGE="🎉 *Pipeline Successful!* All stages completed successfully."
+      curl -X POST -H 'Content-type: application/json' \
+        --data "{\"attachments\":[{\"color\":\"good\",\"text\":\"$MESSAGE\\n*Project:* $CI_PROJECT_NAME\\n*Branch:* $CI_COMMIT_REF_NAME\\n*Pipeline:* $CI_PIPELINE_URL\"}]}" \
+        $SLACK_WEBHOOK_URL
+  tags:
+    - ec2
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  when: on_success
+
+destroy:
+  stage: destroy
+  script:
+    - terraform init -reconfigure
+    - terraform destroy -lock=false -auto-approve  # Add -lock=false
+  when: manual
+  environment:
+    name: production
+    action: stop
+  rules:
+    - if: '$DESTROY_MODE == "true" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /DESTROY_CLUSTER/'
+      when: manual
+    - when: never
+  tags:
+    - ec2

@@ -1,0 +1,71 @@
+stages:
+  - lint
+  - package
+  - deploy
+  - drift-check
+
+variables:
+  HELM_CHART_PATH: "./vprofile-chart"
+  CHART_NAME: "vprofile-chart"
+  EKS_CLUSTER_NAME: "vprofile-eks-cluster"
+  AWS_DEFAULT_REGION: "us-east-1"
+
+.ec2-runner:
+  tags:
+    - ec2
+
+helm-lint:
+  extends: .ec2-runner
+  stage: lint
+  image: alpine:3.18
+  script:
+    - apk add --no-cache curl openssl
+    - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sh
+    - helm lint $HELM_CHART_PATH
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+helm-package:
+  extends: .ec2-runner
+  stage: package
+  image: alpine:3.18
+  script:
+    - apk add --no-cache curl openssl
+    - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sh
+    - helm package $HELM_CHART_PATH
+  artifacts:
+    paths:
+      - $CHART_NAME-*.tgz
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+deploy:
+  extends: .ec2-runner
+  stage: deploy
+  image: alpine/k8s:1.28.4
+  script:
+    - apk add --no-cache aws-cli curl openssl
+    - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sh
+    - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+    - kubectl create namespace vprofile --dry-run=client -o yaml | kubectl apply -f -
+    - helm upgrade --install vprofile $HELM_CHART_PATH --namespace vprofile --set dockerRegistry.server=$DOCKER_REGISTRY_SERVER --set dockerRegistry.username=$DOCKER_REGISTRY_USERNAME --set dockerRegistry.password=$DOCKER_REGISTRY_PASSWORD
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+drift-detection:
+  extends: .ec2-runner
+  stage: drift-check
+  image: alpine/k8s:1.28.4
+  script:
+    - apk add --no-cache aws-cli curl openssl
+    - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sh
+    - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+    - curl https://raw.githubusercontent.com/databus23/helm-diff/master/install-binary.sh | bash
+    - helm diff upgrade vprofile $HELM_CHART_PATH --namespace vprofile --set dockerRegistry.server=$DOCKER_REGISTRY_SERVER --set dockerRegistry.username=$DOCKER_REGISTRY_USERNAME --set dockerRegistry.password=$DOCKER_REGISTRY_PASSWORD
+    - helm upgrade --install vprofile $HELM_CHART_PATH --namespace vprofile --dry-run --set dockerRegistry.server=$DOCKER_REGISTRY_SERVER --set dockerRegistry.username=$DOCKER_REGISTRY_USERNAME --set dockerRegistry.password=$DOCKER_REGISTRY_PASSWORD
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"

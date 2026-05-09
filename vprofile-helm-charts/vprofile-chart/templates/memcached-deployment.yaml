@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.memcached.name }}
+  labels:
+    app: {{ .Values.memcached.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.memcached.name }}
+  replicas: {{ .Values.memcached.replicaCount }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.memcached.name }}
+    spec:
+      {{- if .Values.dockerRegistry.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.dockerRegistry.name }}
+      {{- end }}
+      containers:
+      - name: {{ .Values.memcached.name }}
+        image: {{ .Values.memcached.image }}:{{ .Values.memcached.tag }}
+        imagePullPolicy: {{ .Values.memcached.imagePullPolicy }}
+        ports:
+        - name: vpromc-port
+          containerPort: 11211
