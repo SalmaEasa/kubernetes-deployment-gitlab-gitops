@@ -94,7 +94,6 @@ Code Push → App Pipeline → Docker Image Built → values.yaml updated
 
 [▶ Watch Quick Demo](screenshots&demo/demo.mp4)
 
-> **Note:** If videos don't play in the browser, download them or upload to YouTube and replace the links above.
 
 ---
 
@@ -149,3 +148,9 @@ Code Push → App Pipeline → Docker Image Built → values.yaml updated
 | `SLACK_WEBHOOK_URL` | Slack notifications |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS credentials for EKS |
 | `DOCKER_REGISTRY_SERVER/USERNAME/PASSWORD` | Docker registry for Helm deploy |
+
+---
+
+## Author
+
+**Salma Easa** — GitLab: [@salmaeasa0](https://gitlab.com/salmaeasa0)
