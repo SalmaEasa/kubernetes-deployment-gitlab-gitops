@@ -92,7 +92,7 @@ Code Push → App Pipeline → Docker Image Built → values.yaml updated
 
 ### 🎬 Quick Demo
 
-[▶ Watch Quick Demo](screenshots&demo/demo.mp4)
+![Project Demo](screenshots&demo/demo.gif)
 
 
 ---
